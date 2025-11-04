@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mapa Frota SEMOB</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<style>
+  #map {
+    height: 100vh;
+    width: 100%;
+  }
+
+  .leaflet-popup-content-wrapper {
+    pointer-events: auto;
+  }
+
+  .leaflet-popup {
+    pointer-events: auto;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+const url = "https://corsproxy.io/?https%3A%2F%2Fgeoserver.semob.df.gov.br%2Fgeoserver%2Fsemob%2Fows%3Fservice%3DWFS%26version%3D1.0.0%26request%3DGetFeature%26typeName%3Dsemob%253A%25C3%259Altima%2520posi%25C3%25A7%25C3%25A3o%2520da%2520frota%26outputFormat%3Dapplication%252Fjson";
+
+const map = L.map('map').setView([-15.8, -47.9], 11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+let markers = {};
+let popupInfo = { id: null }; // Armazena o marcador fixado
+
+async function atualizarMapa() {
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+
+    data.features.forEach(f => {
+      const { prefixo, datalocal, velocidade, cd_linha } = f.properties;
+      const lat = parseFloat(f.properties.latitude);
+      const lon = parseFloat(f.properties.longitude);
+
+      if (!lat || !lon || lat === 0 || lon === 0) return;
+      const id = prefixo;
+
+      // Cria marcador se não existir
+      if (!markers[id]) {
+        const marker = L.circleMarker([lat, lon], {
+          radius: 6,
+          fillColor: "#0077b6",
+          color: "#fff",
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.9
+        }).addTo(map);
+
+        marker.bindPopup(`
+          <b>Prefixo:</b> ${prefixo}<br>
+          <b>Linha:</b> ${cd_linha}<br>
+          <b>Velocidade:</b> ${velocidade} km/h<br>
+          <b>Data:</b> ${datalocal}
+        `);
+
+        // Quando o usuário clicar, fixa o popup
+        marker.on('click', () => {
+          popupInfo = { id, marker };
+          marker.openPopup();
+        });
+
+        markers[id] = marker;
+      } else {
+        // Atualiza posição do marcador existente
+        markers[id].setLatLng([lat, lon]);
+
+        // Se este é o marcador com popup fixo, mantém aberto e atualizado
+        if (popupInfo.id === id) {
+          const popupContent = `
+            <b>Prefixo:</b> ${prefixo}<br>
+            <b>Linha:</b> ${cd_linha}<br>
+            <b>Velocidade:</b> ${velocidade} km/h<br>
+            <b>Data:</b> ${datalocal}
+          `;
+          popupInfo.marker
+            .setPopupContent(popupContent)
+            .openPopup();
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error("Erro ao atualizar:", error);
+  }
+}
+
+// Primeira atualização imediata
+atualizarMapa();
+// Atualiza a cada 5 segundos
+setInterval(atualizarMapa, 5000);
+</script>
+
+</body>
+</html>

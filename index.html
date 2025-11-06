@@ -1,109 +1,338 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Mapa Frota SEMOB</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <style>
-  #map {
-    height: 100vh;
+  *{margin:0;padding:0;box-sizing:border-box}
+  body,html,#map{height:100%}
+  #map{width:100%}
+
+  /* PADRONIZAÇÃO DAS LEGENDAS */
+  .line-label {
+    display:inline-block;
+    transform: translate(-50%,-50%);
+    white-space: nowrap;
+    cursor: pointer;
+    font-weight:700;
+    text-align:center;
+    line-height:1.2;
+    padding:4px 6px;
+    border:3px solid #fff;
+    font-size:12px;
+    border-radius:4px;
+  }
+
+  .leaflet-popup-content { font-family: Arial, sans-serif; font-size:13px; }
+
+  /* Caixa de pesquisa no lado direito */
+  .search-container {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 99999;
+    width: 300px;
+    font-family: Arial, sans-serif;
+  }
+  @media (min-width:768px){
+    .search-container{ width: 400px; }
+  }
+  #search {
     width: 100%;
+    height: 60px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+    font-size: 20px;
+    outline: 1px solid gray;
+  }
+  .suggestions {
+    background: #fff;
+    border: 1px solid #ccc;
+    border-top: none;
+    max-height: 250px;
+    overflow-y: auto;
+    border-radius: 0 0 4px 4px;
+    display: none;
+  }
+  .suggestion-item { padding: 6px 10px; cursor: pointer; }
+  .suggestion-item:hover { background: #f0f0f0; }
+
+  .search-tags {
+    display:flex;
+    flex-wrap:wrap;
+    margin-top:5px;
+  }
+  .tag {
+    background:#0077b6;
+    color:white;
+    padding:4px 8px;
+    margin:2px;
+    border-radius:4px;
+    font-size:12px;
+    cursor:pointer;
+    user-select:none;
   }
 
-  .leaflet-popup-content-wrapper {
-    pointer-events: auto;
+  .filtro-container{
+    position:absolute;
+    bottom:30px;
+    right:30px;
+    background:#fff;
+    padding:10px 12px;
+    border-radius:10px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.15);
+    z-index:99999;
+    font-family:Arial, sans-serif;
+    font-size:14px;
   }
-
-  .leaflet-popup {
-    pointer-events: auto;
-  }
+  .filtro-container label{display:block;margin:4px 0}
 </style>
 </head>
 <body>
+<div class="search-container">
+  <input type="text" id="search" placeholder="Pesquisar linha ou prefixo..." />
+  <div id="suggestions" class="suggestions"></div>
+  <div id="search-tags" class="search-tags"></div>
+</div>
 
 <div id="map"></div>
 
+<div class="filtro-container">
+  <label><input id="todos" type="checkbox" checked> Exibir todos</label>
+  <label><input class="empresa" type="checkbox" value="PIRACICABANA" checked> PIRACICABANA</label>
+  <label><input class="empresa" type="checkbox" value="PIONEIRA" checked> PIONEIRA</label>
+  <label><input class="empresa" type="checkbox" value="URBI" checked> URBI</label>
+  <label><input class="empresa" type="checkbox" value="MARECHAL" checked> MARECHAL</label>
+  <label><input class="empresa" type="checkbox" value="BSBUS" checked> BSBUS</label>
+</div>
+
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script>
-const url = "https://corsproxy.io/?https%3A%2F%2Fgeoserver.semob.df.gov.br%2Fgeoserver%2Fsemob%2Fows%3Fservice%3DWFS%26version%3D1.0.0%26request%3DGetFeature%26typeName%3Dsemob%253A%25C3%259Altima%2520posi%25C3%25A7%25C3%25A3o%2520da%2520frota%26outputFormat%3Dapplication%252Fjson";
+const DATA_URL = "https://corsproxy.io/?https%3A%2F%2Fgeoserver.semob.df.gov.br%2Fgeoserver%2Fsemob%2Fows%3Fservice%3DWFS%26version%3D1.0.0%26request%3DGetFeature%26typeName%3Dsemob%253A%25C3%259Altima%2520posi%25C3%25A7%25C3%25A3o%2520da%2520frota%26outputFormat%3Dapplication%252Fjson";
+const ZOOM_THRESHOLD_FULL = 13;
+const CELL_SIZE_PX = 60;
+const REFRESH_MS = 2000;
 
 const map = L.map('map').setView([-15.8, -47.9], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'© OpenStreetMap' }).addTo(map);
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap'
-}).addTo(map);
+const fullMarkers = {};
+const smallMarkers = {};
+let popupInfo = { id: null, marker: null };
+const lastUpdateTimes = {};
+let fullMarkersData = [];
+let searchTerms = [];
 
-let markers = {};
-let popupInfo = { id: null }; // Armazena o marcador fixado
+const coresEmpresas = {
+  "PIRACICABANA": "#ff1e00",
+  "PIONEIRA": "#ffd500",
+  "URBI": "#0080ff",
+  "MARECHAL": "#ff9100",
+  "BSBUS": "#4dff00"
+};
 
-async function atualizarMapa() {
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-
-    data.features.forEach(f => {
-      const { prefixo, datalocal, velocidade, cd_linha } = f.properties;
-      const lat = parseFloat(f.properties.latitude);
-      const lon = parseFloat(f.properties.longitude);
-
-      if (!lat || !lon || lat === 0 || lon === 0) return;
-      const id = prefixo;
-
-      // Cria marcador se não existir
-      if (!markers[id]) {
-        const marker = L.circleMarker([lat, lon], {
-          radius: 6,
-          fillColor: "#0077b6",
-          color: "#fff",
-          weight: 1,
-          opacity: 1,
-          fillOpacity: 0.9
-        }).addTo(map);
-
-        marker.bindPopup(`
-          <b>Prefixo:</b> ${prefixo}<br>
-          <b>Linha:</b> ${cd_linha}<br>
-          <b>Velocidade:</b> ${velocidade} km/h<br>
-          <b>Data:</b> ${datalocal}
-        `);
-
-        // Quando o usuário clicar, fixa o popup
-        marker.on('click', () => {
-          popupInfo = { id, marker };
-          marker.openPopup();
-        });
-
-        markers[id] = marker;
-      } else {
-        // Atualiza posição do marcador existente
-        markers[id].setLatLng([lat, lon]);
-
-        // Se este é o marcador com popup fixo, mantém aberto e atualizado
-        if (popupInfo.id === id) {
-          const popupContent = `
-            <b>Prefixo:</b> ${prefixo}<br>
-            <b>Linha:</b> ${cd_linha}<br>
-            <b>Velocidade:</b> ${velocidade} km/h<br>
-            <b>Data:</b> ${datalocal}
-          `;
-          popupInfo.marker
-            .setPopupContent(popupContent)
-            .openPopup();
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error("Erro ao atualizar:", error);
+function empresaPorPrefixo(numero){
+  const s = String(numero||'');
+  switch(s.charAt(0)){
+    case '1': return 'PIRACICABANA';
+    case '2': return 'PIONEIRA';
+    case '3': return 'URBI';
+    case '4': return 'MARECHAL';
+    case '5': case '7': return 'BSBUS';
+    default: return 'DESCONHECIDO';
   }
 }
 
-// Primeira atualização imediata
-atualizarMapa();
-// Atualiza a cada 5 segundos
-setInterval(atualizarMapa, 5000);
-</script>
+function formatarTempo(segundos){
+  const dias = Math.floor(segundos/86400);
+  const horas = Math.floor((segundos%86400)/3600);
+  const minutos = Math.floor((segundos%3600)/60);
+  const seg = segundos%60;
+  if(dias>0) return `${dias}d ${horas}h ${minutos}m ${seg}s`;
+  if(horas>0) return `${horas}h ${minutos}m ${seg}s`;
+  if(minutos>0) return `${minutos}m ${seg}s`;
+  return `${seg}s`;
+}
 
+function criarConteudoPopup(prefixo, cd_linha, empresa, id){
+  const tempo = lastUpdateTimes[id] ? formatarTempo(Math.floor((Date.now()-lastUpdateTimes[id])/1000)) : 'calculando...';
+  return `<b>Prefixo:</b> ${prefixo}<br>
+          <b>Linha:</b> ${cd_linha || '—'}<br>
+          <b>Empresa:</b> ${empresa}<br>
+          <b>Último sinal:</b> ${tempo} atrás`;
+}
+
+function bindAndOpenMarker(marker, id, prefixo, cd_linha, empresa){
+  // Fecha popup anterior se for outro marcador
+  if(popupInfo.marker && popupInfo.marker!==marker){
+    popupInfo.marker.closePopup();
+  }
+  const content = criarConteudoPopup(prefixo, cd_linha, empresa, id);
+  try { marker.unbindPopup(); } catch(e){}
+  marker.bindPopup(content, { autoPan:false, closeOnClick:false, autoClose:false }).openPopup();
+  popupInfo = { id, marker };
+}
+
+function getCellKey(latlng){ 
+  const p = map.project(latlng, map.getZoom());
+  const cellX = Math.floor(p.x / CELL_SIZE_PX);
+  const cellY = Math.floor(p.y / CELL_SIZE_PX);
+  return `${cellX}_${cellY}`;
+}
+
+async function atualizarMapa(){
+  try{
+    const resp = await fetch(DATA_URL);
+    if(!resp.ok) throw new Error('fetch error');
+    const data = await resp.json();
+    const features = data.features || [];
+    fullMarkersData = features;
+    const zoom = map.getZoom();
+    const fullMode = zoom >= ZOOM_THRESHOLD_FULL;
+    const activeEmpresas = Array.from(document.querySelectorAll('.empresa:checked')).map(el=>el.value);
+
+    const filteredFeatures = features.filter(f => {
+      const p = f.properties;
+      const prefixo = String(p.prefixo);
+      const linha = String(p.cd_linha);
+      const empresa = empresaPorPrefixo(prefixo);
+      if(!activeEmpresas.includes(empresa)) return false;
+      if(searchTerms.length===0) return true;
+      return searchTerms.some(term => (linha && linha.includes(term)) || (prefixo && prefixo.includes(term)));
+    });
+
+    for(const id in fullMarkers){ map.removeLayer(fullMarkers[id]); delete fullMarkers[id]; }
+    for(const k in smallMarkers){ map.removeLayer(smallMarkers[k]); delete smallMarkers[k]; }
+
+    if(fullMode){
+      filteredFeatures.forEach(f=>{
+        const p = f.properties;
+        const prefixo = p.prefixo;
+        const id = String(prefixo);
+        const cd_linha = p.cd_linha;
+        const empresa = empresaPorPrefixo(prefixo);
+        const lat = parseFloat(p.latitude);
+        const lon = parseFloat(p.longitude);
+        if(!lat || !lon || lat===0 || lon===0) return;
+        // Corrigido: usar getTime() para consistência PC/celular
+        lastUpdateTimes[id] = p.datalocal ? new Date(p.datalocal).getTime() : (lastUpdateTimes[id] || Date.now());
+        const color = coresEmpresas[empresa] || '#0077b6';
+        let html = `<div class="line-label" style="background:${color}">${cd_linha||'—'}</div>`;
+        const icon = L.divIcon({ className:'', html, iconSize:[0,0], iconAnchor:[0,0], popupAnchor:[0,-10] });
+        const m = L.marker([lat, lon], { icon }).addTo(map);
+        m.on('click', ()=> bindAndOpenMarker(m, id, prefixo, cd_linha, empresa));
+        fullMarkers[id] = m;
+      });
+    } else {
+      const cellMap = {};
+      filteredFeatures.forEach(f=>{
+        const p = f.properties;
+        const prefixo = String(p.prefixo);
+        const id = String(prefixo);
+        const cd_linha = p.cd_linha;
+        const empresa = empresaPorPrefixo(prefixo);
+        const lat = parseFloat(p.latitude);
+        const lon = parseFloat(p.longitude);
+        if(!lat || !lon || lat===0 || lon===0) return;
+        lastUpdateTimes[id] = p.datalocal ? new Date(p.datalocal).getTime() : (lastUpdateTimes[id] || Date.now());
+        const latlng = L.latLng(lat, lon);
+        const cellKey = getCellKey(latlng);
+        if(!cellMap[cellKey]) cellMap[cellKey] = { id, latlng, cd_linha, empresa, color: coresEmpresas[empresa] || '#0077b6', prefixo };
+      });
+      for(const key in cellMap){
+        const rep = cellMap[key];
+        let html = `<div class="line-label" style="background:${rep.color}">${rep.cd_linha||'—'}</div>`;
+        const icon = L.divIcon({ className:'', html, iconSize:[0,0], iconAnchor:[0,0], popupAnchor:[0,-8] });
+        const m = L.marker(rep.latlng, { icon, interactive:true }).addTo(map);
+        m.on('click', ()=> bindAndOpenMarker(m, rep.id, rep.prefixo, rep.cd_linha, rep.empresa));
+        smallMarkers[key] = m;
+      }
+    }
+
+  } catch(err){ console.error('Erro atualizarMapa', err); }
+}
+
+// Atualiza tempo do popup a cada segundo
+setInterval(()=>{
+  if(popupInfo.id && popupInfo.marker && lastUpdateTimes[popupInfo.id]){
+    const popup = map._popup;
+    if(popup && popup.isOpen()){
+      const segundos = Math.floor((Date.now()-lastUpdateTimes[popupInfo.id])/1000);
+      const tempo = formatarTempo(segundos);
+      popup.setContent(popup.getContent().replace(/Último sinal:.*?atrás/, `Último sinal: ${tempo} atrás`));
+    }
+  }
+},1000);
+
+// filtros
+document.querySelectorAll('.empresa').forEach(chk=>chk.addEventListener('change', atualizarMapa));
+document.getElementById('todos').addEventListener('change', e=>{
+  const val = e.target.checked;
+  document.querySelectorAll('.empresa').forEach(c=>c.checked = val);
+  atualizarMapa();
+});
+
+// PESQUISA MÚLTIPLA
+const searchInput = document.getElementById('search');
+const suggestionsBox = document.getElementById('suggestions');
+const tagsContainer = document.getElementById('search-tags');
+
+function getSearchOptions(features){
+  const set = new Set();
+  features.forEach(f => { 
+    const p=f.properties; 
+    if(p.cd_linha) set.add(String(p.cd_linha)); 
+    if(p.prefixo) set.add(String(p.prefixo)); 
+  });
+  return Array.from(set);
+}
+
+function atualizarTagsUI(){
+  tagsContainer.innerHTML = '';
+  searchTerms.forEach(term=>{
+    const div = document.createElement('div');
+    div.className = 'tag';
+    div.innerText = term + ' ×';
+    div.dataset.term = term;
+    tagsContainer.appendChild(div);
+  });
+}
+
+tagsContainer.addEventListener('click', e=>{
+  if(e.target.classList.contains('tag')){
+    const term = e.target.dataset.term;
+    searchTerms = searchTerms.filter(t=>t!==term);
+    atualizarTagsUI();
+    atualizarMapa();
+  }
+});
+
+searchInput.addEventListener('input', ()=>{
+  const val = searchInput.value.trim();
+  if(!val){ suggestionsBox.style.display='none'; return; }
+  const options = getSearchOptions(fullMarkersData).filter(x=>x.includes(val));
+  suggestionsBox.innerHTML = options.map(x=>`<div class="suggestion-item">${x}</div>`).join('');
+  suggestionsBox.style.display = options.length? 'block':'none';
+});
+
+suggestionsBox.addEventListener('click', e=>{
+  if(e.target.classList.contains('suggestion-item')){
+    const val = e.target.innerText;
+    if(!searchTerms.includes(val)) searchTerms.push(val);
+    searchInput.value = '';
+    suggestionsBox.style.display = 'none';
+    atualizarTagsUI();
+    atualizarMapa();
+  }
+});
+
+map.on('zoomend', atualizarMapa);
+map.on('moveend', atualizarMapa);
+atualizarMapa();
+setInterval(atualizarMapa, REFRESH_MS);
+</script>
 </body>
 </html>

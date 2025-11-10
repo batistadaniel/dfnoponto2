@@ -404,7 +404,7 @@ setInterval(()=>{
         const p = f.properties;
         if(String(p.prefixo) === popupInfo.id){
           prefixo = p.prefixo;
-          cd_linha = p.cd_linha || '—';
+          cd_linha = p.cd_linha || 'Sem Operação ou <br>Transferência';
           empresa = empresaPorPrefixo(prefixo);
           break;
         }

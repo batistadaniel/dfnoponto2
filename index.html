@@ -111,8 +111,135 @@
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script>
+
+let linhaAtivaBorda = null;
+let linhaAtivaCor = null;
+let dadosTracado = null;
+
+async function carregarTracado() {
+  const resp = await fetch("json/tracado_linha.json");
+  dadosTracado = await resp.json();
+}
+
+carregarTracado();
+
+function desenharTracado(cd_linha, empresa, sentidoApi){
+  if (!dadosTracado) return;
+
+  // limpar traçado anterior
+  if (linhaAtivaBorda) { map.removeLayer(linhaAtivaBorda); linhaAtivaBorda = null; }
+  if (linhaAtivaCor) { map.removeLayer(linhaAtivaCor); linhaAtivaCor = null; }
+
+  if(!cd_linha) return;
+
+  // filtra todos os registros do json para a linha
+  const candidatos = dadosTracado.filter(x => String(x.cd_linha) === String(cd_linha));
+  if(!candidatos || candidatos.length === 0) return;
+
+  // função auxiliar para mapear sentidoApi ('0' => 'IDA','1' => 'VOLTA')
+  function mapSentidoApi(s){ if(s === '0') return 'IDA'; if(s === '1') return 'VOLTA'; return null; }
+  const sentidoMapeado = mapSentidoApi(String(sentidoApi));
+
+  // priorizar correspondência exata por sentido_linha
+  let item = null;
+  if(sentidoMapeado){
+    item = candidatos.find(c => String(c.sentido_linha).toUpperCase() === sentidoMapeado);
+  }
+  // se não achou, tentar pegar CIRCULAR (se existir)
+  if(!item){
+    item = candidatos.find(c => String(c.sentido_linha).toUpperCase() === 'CIRCULAR');
+  }
+  // fallback para qualquer registro da linha
+  if(!item) item = candidatos[0];
+
+  if(!item) return;
+
+  let coords;
+  try {
+    coords = JSON.parse(item.tracado_linha);
+  } catch (e) {
+    console.error("Erro ao converter tracado_linha:", e);
+    return;
+  }
+
+  const corEmpresa = coresEmpresas[empresa] || "#0080ff";
+
+  linhaAtivaBorda = L.polyline(coords, {
+    color: "black",
+    weight: 5,
+    opacity: 1
+  }).addTo(map);
+
+  linhaAtivaCor = L.polyline(coords, {
+    color: corEmpresa,
+    weight: 3,
+    opacity: 1
+  }).addTo(map);
+
+  // expandir mapa para bounds do traçado
+  try{ map.fitBounds(linhaAtivaCor.getBounds()); }catch(e){}
+}
+
+// seleção por número de linha (adicionado)
+let selectedLinha = null; // cd_linha selecionada (string) ou null
+
+function limparTracado(){
+  if (linhaAtivaBorda) { map.removeLayer(linhaAtivaBorda); linhaAtivaBorda = null; }
+  if (linhaAtivaCor) { map.removeLayer(linhaAtivaCor); linhaAtivaCor = null; }
+}
+
+function aplicarFiltroPorLinha(cd_linha){
+  // Se cd_linha for null -> restaura todos (addTo map)
+  // Caso contrário, mostra apenas markers cuja propriedade _cd_linha === cd_linha
+  for(const id in fullMarkers){
+    const m = fullMarkers[id];
+    if(!m) continue;
+    try{
+      if(!cd_linha || String(m._cd_linha) === String(cd_linha)){
+        if(!map.hasLayer(m)) m.addTo(map);
+      } else {
+        if(map.hasLayer(m)) map.removeLayer(m);
+      }
+    }catch(e){ /* ignore */ }
+  }
+  for(const key in smallMarkers){
+    const m = smallMarkers[key];
+    if(!m) continue;
+    try{
+      if(!cd_linha || String(m._cd_linha) === String(cd_linha)){
+        if(!map.hasLayer(m)) m.addTo(map);
+      } else {
+        if(map.hasLayer(m)) map.removeLayer(m);
+      }
+    }catch(e){ /* ignore */ }
+  }
+}
+
+function selecionarLinha(cd_linha, empresa, sentido){
+  // togglear seleção: se clicar na mesma linha, limpa seleção
+  if(!cd_linha){
+    selectedLinha = null;
+    aplicarFiltroPorLinha(null);
+    limparTracado();
+    return;
+  }
+  if(selectedLinha && String(selectedLinha) === String(cd_linha)){
+    // já selecionada -> limpar
+    selectedLinha = null;
+    aplicarFiltroPorLinha(null);
+    limparTracado();
+  } else {
+    selectedLinha = String(cd_linha);
+    aplicarFiltroPorLinha(selectedLinha);
+    // desenhar tracado usando a empresa do clique para colorir
+    desenharTracado(cd_linha, empresa, sentido);
+  }
+}
+
+
+
 /* --- configs (mantive seus valores) --- */
-const DATA_URL = "https://corsproxy.io/?https%3A%2F%2Fgeoserver.semob.df.gov.br%2Fgeoserver%2Fsemob%2Fows%3Fservice%3DWFS%26version%3D1.0.0%26request%3DGetFeature%26typeName%3Dsemob%253A%25C3%259Altima%2520posi%25C3%25A7%25C3%25A3o%2520da%2520frota%26outputFormat%3Dapplication%252Fjson";
+const DATA_URL = "http://localhost:3000/api/geojson";
 const ZOOM_THRESHOLD_FULL = 13;
 const CELL_SIZE_PX = 60;
 const REFRESH_MS = 3000;
@@ -159,15 +286,95 @@ function formatarTempo(segundos){
   return `${seg}s`;
 }
 
+function formatarDataHora(datalocal) {
+  if (!datalocal) return { data: "—", hora: "—" };
+
+  const d = new Date(datalocal);
+
+  // Formatar data dd/mm/aaaa
+  const dia = String(d.getDate()).padStart(2, "0");
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const ano = d.getFullYear();
+
+  const data = `${dia}/${mes}/${ano}`;
+
+  // Formatar hora hh:mm:ss
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+
+  const hora = `${hh}:${mm}:${ss}`;
+
+  return { data, hora };
+}
+
+
+
 /* Mantive exatamente sua estrutura de popup (só que sem destruir quando atualiza) */
 function criarConteudoPopup(prefixo, cd_linha, empresa, id){
   const tempo = lastUpdateTimes[id] ? formatarTempo(Math.floor((Date.now()-lastUpdateTimes[id])/1000)) : 'calculando...';
-  return `<b>Linha:</b> ${cd_linha || 'Sem Operação ou <br>Transferência'}<br>
-          <hr>
-          <b>Prefixo:</b> ${prefixo}<br>
-          <b>Empresa:</b> ${empresa}<br>
-          <b>Último sinal:</b> ${tempo} atrás`;
+
+  // pegar datalocal original do feature
+  let datalocalOriginal = null;
+  let sentidoOriginal = null; // valor vindo da API: '0','1' ou ''
+  for (const f of fullMarkersData) {
+    if (String(f.properties.prefixo) === String(id)) {
+      datalocalOriginal = f.properties.datalocal;
+      sentidoOriginal = (f.properties.sentido !== undefined && f.properties.sentido !== null) ? String(f.properties.sentido) : '';
+      break;
+    }
+  }
+
+  const { data, hora } = formatarDataHora(datalocalOriginal);
+
+  // determinar texto de sentido consultando o JSON de traçados
+  let sentidoTxt = '—';
+  // primeiro, mapear valor da API para texto
+  if (sentidoOriginal === '0') sentidoTxt = 'Ida';
+  else if (sentidoOriginal === '1') sentidoTxt = 'Volta';
+
+  if (cd_linha && dadosTracado){
+    // procurar entradas do json para esta linha
+    const candidatos = dadosTracado.filter(x => String(x.cd_linha) === String(cd_linha));
+    if(candidatos && candidatos.length){
+      // tentar achar registro com sentido_linha IDA/VOLTA conforme API
+      const matchApi = candidatos.find(c => {
+        const s = String(c.sentido_linha||'').toUpperCase();
+        if(sentidoOriginal === '0' && s === 'IDA') return true;
+        if(sentidoOriginal === '1' && s === 'VOLTA') return true;
+        return false;
+      });
+      if(matchApi){
+        // se achou correspondência direta, usar só Ida/Volta
+        sentidoTxt = matchApi.sentido_linha;
+      } else {
+        // se não há correspondência direta, verificar se existe CIRCULAR
+        const circ = candidatos.find(c => String(c.sentido_linha||'').toUpperCase() === 'CIRCULAR');
+        if(circ){
+          // exibir 'CIRCULAR - (Ida)' ou 'CIRCULAR - (Volta)' quando API informar sentido
+          if(sentidoOriginal === '0') sentidoTxt = 'CIRCULAR - (Ida)';
+          else if(sentidoOriginal === '1') sentidoTxt = 'CIRCULAR - (Volta)';
+          else sentidoTxt = 'CIRCULAR';
+        } else if(candidatos[0].sentido_linha){
+          // fallback para o primeiro registro
+          sentidoTxt = candidatos[0].sentido_linha;
+        }
+      }
+    }
+  }
+
+  return `
+    <b>Linha:</b> ${cd_linha || 'Sem Operação ou <br>Transferência'}<br>
+    <hr><br>
+    <b>Sentido:</b> ${sentidoTxt}<br>
+    <b>Prefixo:</b> ${prefixo}<br>
+    <b>Empresa:</b> ${empresa}<br>
+    <b>Data:</b> ${data}<br>
+    <b>Horário:</b> ${hora}<br>
+    <b>Último sinal:</b> ${tempo} atrás
+  `;
 }
+
 
 /* bind com comportamento padrão: abre popup, ao abrir outro fecha anterior (padrão do leaflet) */
 function bindAndOpenMarker(marker, id, prefixo, cd_linha, empresa){
@@ -206,6 +413,8 @@ async function atualizarMapa(){
       const linha = String(p.cd_linha || '');
       const empresa = empresaPorPrefixo(prefixo);
       if(!activeEmpresas.includes(empresa)) return false;
+      // respeitar seleção por linha: se selectedLinha definida, aceitar só essa linha
+      if(selectedLinha && String(linha) !== String(selectedLinha)) return false;
       if(searchTerms.length === 0) return true;
       return searchTerms.some(term => (linha && linha.includes(term)) || (prefixo && prefixo.includes(term)));
     });
@@ -222,6 +431,8 @@ async function atualizarMapa(){
         const empresa = empresaPorPrefixo(prefixo);
         const lat = parseFloat(p.latitude);
         const lon = parseFloat(p.longitude);
+        // guardar sentido original da API (p.sentido pode ser '0','1' ou '')
+        const sentidoApi = (p.sentido !== undefined && p.sentido !== null) ? String(p.sentido) : '';
         if(!lat || !lon || lat===0 || lon===0) continue;
 
         // armazenar tempo em ms (consistente)
@@ -234,6 +445,12 @@ async function atualizarMapa(){
         // se o marker já existe, apenas atualize posição e html
         if(fullMarkers[id]){
           fullMarkers[id].setLatLng([lat, lon]);
+          // anexa metadados caso não existam
+          fullMarkers[id]._cd_linha = cd_linha;
+          fullMarkers[id]._empresa = empresa;
+          fullMarkers[id]._prefixo = prefixo;
+          fullMarkers[id]._sentido = sentidoApi;
+
           // atualiza HTML do divIcon se necessário
           const el = fullMarkers[id].getElement();
           if(el && el.innerHTML !== html){
@@ -256,8 +473,16 @@ async function atualizarMapa(){
           // criar novo marker
           const icon = L.divIcon({ className:'', html, iconSize:[0,0], iconAnchor:[0,0], popupAnchor:[0,-10] });
           const m = L.marker([lat, lon], { icon }).addTo(map);
+          // anexa metadados para filtro
+          m._cd_linha = cd_linha;
+          m._empresa = empresa;
+          m._prefixo = prefixo;
+          m._sentido = sentidoApi;
+
           m.on('click', function(evt){
             bindAndOpenMarker(m, id, prefixo, cd_linha, empresa);
+            // selecionar apenas linhas com mesmo número e desenhar tracado
+            selecionarLinha(cd_linha, empresa, sentidoApi);
           });
           fullMarkers[id] = m;
 
@@ -302,6 +527,7 @@ async function atualizarMapa(){
         const empresa = empresaPorPrefixo(prefixo);
         const lat = parseFloat(p.latitude);
         const lon = parseFloat(p.longitude);
+        const sentidoApi = (p.sentido !== undefined && p.sentido !== null) ? String(p.sentido) : '';
         if(!lat || !lon || lat===0 || lon===0) continue;
 
         lastUpdateTimes[id] = p.datalocal ? new Date(p.datalocal).getTime() : (lastUpdateTimes[id] || Date.now());
@@ -311,7 +537,7 @@ async function atualizarMapa(){
         idCellMap[id] = cellKey;
 
         if(!cellMap[cellKey]){
-          cellMap[cellKey] = { id, latlng, cd_linha, empresa, color: coresEmpresas[empresa] || '#0077b6', prefixo };
+          cellMap[cellKey] = { id, latlng, cd_linha, empresa, color: coresEmpresas[empresa] || '#0077b6', prefixo, sentido: sentidoApi };
         }
       }
 
@@ -328,6 +554,12 @@ async function atualizarMapa(){
 
         if(smallMarkers[cellKey]){
           smallMarkers[cellKey].setLatLng(rep.latlng);
+          // anexa metadados caso não existam
+          smallMarkers[cellKey]._cd_linha = rep.cd_linha;
+          smallMarkers[cellKey]._empresa = rep.empresa;
+          smallMarkers[cellKey]._prefixo = rep.prefixo;
+          smallMarkers[cellKey]._sentido = rep.sentido;
+
           const el = smallMarkers[cellKey].getElement();
           if(el && el.innerHTML !== html){
             const icon = L.divIcon({ className:'', html, iconSize:[0,0], iconAnchor:[0,0], popupAnchor:[0,-8] });
@@ -346,7 +578,17 @@ async function atualizarMapa(){
         } else {
           const icon = L.divIcon({ className:'', html, iconSize:[0,0], iconAnchor:[0,0], popupAnchor:[0,-8] });
           const m = L.marker(rep.latlng, { icon, interactive:true }).addTo(map);
-          m.on('click', ()=> bindAndOpenMarker(m, rep.id, rep.prefixo, rep.cd_linha, rep.empresa));
+          // anexa metadados
+          m._cd_linha = rep.cd_linha;
+          m._empresa = rep.empresa;
+          m._prefixo = rep.prefixo;
+          m._sentido = rep.sentido;
+
+          m.on('click', ()=> {
+            bindAndOpenMarker(m, rep.id, rep.prefixo, rep.cd_linha, rep.empresa);
+            // selecionar apenas linhas com mesmo número e desenhar tracado
+            selecionarLinha(rep.cd_linha, rep.empresa, rep.sentido);
+          });
           smallMarkers[cellKey] = m;
 
           if(popupInfo.id === rep.id){
@@ -413,6 +655,8 @@ setInterval(()=>{
           <hr>
           <b>Prefixo:</b> ${prefixo}<br>
           <b>Empresa:</b> ${empresa}<br>
+          <b>Data:</b> ${data}<br>
+          <b>Horário:</b> ${hora}<br>
           <b>Último sinal:</b> ${tempo} atrás`;
       popup.setContent(newContent);
     }

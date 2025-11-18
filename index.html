@@ -20,7 +20,7 @@
     text-align:center;
     line-height:1.2;
     padding:2px 4px;
-    border:2px solid #000;
+    border:2.5px solid #000;
     font-size:12px;
     border-radius:6px;
   }
@@ -79,7 +79,7 @@
   .filtro-container{
     position:absolute;
     bottom:30px;
-    right:30px;
+    right:12px;
     background:#fff;
     padding:10px 12px;
     border-radius:10px;
@@ -89,6 +89,17 @@
     font-size:14px;
   }
   .filtro-container label{display:block;margin:4px 0}
+</style>
+<style>
+  .hover-tooltip {
+    background: rgba(255,255,255,0.95);
+    color: #000;
+    border: 1px solid rgba(0,0,0,0.2);
+    padding: 4px 8px;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+    font-weight: 700;
+  }
 </style>
 </head>
 <body>
@@ -176,6 +187,38 @@ function desenharTracado(cd_linha, empresa, sentidoApi){
     opacity: 1
   }).addTo(map);
 
+  // permitir fechar o tracado clicando sobre ele
+  try{
+    linhaAtivaBorda.on('click', function(){
+      selectedLinha = null;
+      aplicarFiltroPorLinha(null);
+      limparTracado();
+    });
+  }catch(e){}
+  try{
+    linhaAtivaCor.on('click', function(){
+      selectedLinha = null;
+      aplicarFiltroPorLinha(null);
+      limparTracado();
+    });
+  }catch(e){}
+
+  // tornar as polylines interativas para permitir fechar clicando nelas
+  try{
+    linhaAtivaBorda.on('click', function(e){
+      selectedLinha = null;
+      aplicarFiltroPorLinha(null);
+      limparTracado();
+    });
+  }catch(e){}
+  try{
+    linhaAtivaCor.on('click', function(e){
+      selectedLinha = null;
+      aplicarFiltroPorLinha(null);
+      limparTracado();
+    });
+  }catch(e){}
+
   // expandir mapa para bounds do traçado
   try{ map.fitBounds(linhaAtivaCor.getBounds()); }catch(e){}
 }
@@ -239,13 +282,29 @@ function selecionarLinha(cd_linha, empresa, sentido){
 
 
 /* --- configs (mantive seus valores) --- */
-const DATA_URL = "https://corsproxy.io/?https%3A%2F%2Fgeoserver.semob.df.gov.br%2Fgeoserver%2Fsemob%2Fows%3Fservice%3DWFS%26version%3D1.0.0%26request%3DGetFeature%26typeName%3Dsemob%253A%25C3%259Altima%2520posi%25C3%25A7%25C3%25A3o%2520da%2520frota%26outputFormat%3Dapplication%252Fjson";
+const DATA_URL = "http://localhost:3000/api/geojson";
 const ZOOM_THRESHOLD_FULL = 13;
 const CELL_SIZE_PX = 60;
 const REFRESH_MS = 3000;
 
 const map = L.map('map').setView([-15.8, -47.9], 11);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'© OpenStreetMap' }).addTo(map);
+
+// clicar no mapa (fora) limpa seleção/tracado e restaura marcadores
+map.on('click', function(){
+  selectedLinha = null;
+  aplicarFiltroPorLinha(null);
+  limparTracado();
+});
+
+// atalho ESC para limpar seleção/tracado
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape'){
+    selectedLinha = null;
+    aplicarFiltroPorLinha(null);
+    limparTracado();
+  }
+});
 
 const fullMarkers = {};   // id -> marker
 const smallMarkers = {};  // cellKey -> marker
@@ -364,9 +423,11 @@ function criarConteudoPopup(prefixo, cd_linha, empresa, id){
   }
 
   return `
-    <b>Linha:</b> ${cd_linha || 'Sem Operação ou <br>Transferência'}<br>
-    <hr><br>
-    <b>Sentido:</b> ${sentidoTxt}<br>
+    <div style="text-align:center;">
+      <b style="padding-bottom: 6px; display: inline-block;text-align:center;">Linha:</b> ${cd_linha || 'Sem Operação ou <br>Transferência'}<br>
+    </div> 
+    <hr >
+    <b style="padding-top: 6px; display: inline-block;">Sentido:</b> ${sentidoTxt}<br>
     <b>Prefixo:</b> ${prefixo}<br>
     <b>Empresa:</b> ${empresa}<br>
     <b>Data:</b> ${data}<br>
@@ -392,6 +453,26 @@ function getCellKey(latlng){
   const cellX = Math.floor(p.x / CELL_SIZE_PX);
   const cellY = Math.floor(p.y / CELL_SIZE_PX);
   return `${cellX}_${cellY}`;
+}
+
+function mapSentidoTxt(s){
+  if(s === '0') return 'Ida';
+  if(s === '1') return 'Volta';
+  return '—';
+}
+
+function attachHoverTooltip(marker, cd_linha_display, sentidoApi){
+  try{
+    const sentidoTxt = mapSentidoTxt(String(sentidoApi || ''));
+    const label = (cd_linha_display === undefined || cd_linha_display === null) ? '—' : String(cd_linha_display);
+    const text = `${label} | ${sentidoTxt}`;
+    try { marker.unbindTooltip(); } catch(e){}
+    marker.bindTooltip(text, { direction: 'right', offset: [10,0], className: 'hover-tooltip', sticky: true });
+    // ensure hover opens/closes tooltip
+    marker.off('mouseover.tooltip'); marker.off('mouseout.tooltip');
+    marker.on('mouseover.tooltip', ()=>{ try{ marker.openTooltip(); }catch(e){} });
+    marker.on('mouseout.tooltip', ()=>{ try{ marker.closeTooltip(); }catch(e){} });
+  }catch(e){ /* ignore */ }
 }
 
 /* === atualização de marcadores: evitar destruir tudo === */
@@ -451,6 +532,9 @@ async function atualizarMapa(){
           fullMarkers[id]._prefixo = prefixo;
           fullMarkers[id]._sentido = sentidoApi;
 
+          // atualizar tooltip de hover
+          try{ attachHoverTooltip(fullMarkers[id], cd_linha, sentidoApi); }catch(e){}
+
           // atualiza HTML do divIcon se necessário
           const el = fullMarkers[id].getElement();
           if(el && el.innerHTML !== html){
@@ -478,6 +562,9 @@ async function atualizarMapa(){
           m._empresa = empresa;
           m._prefixo = prefixo;
           m._sentido = sentidoApi;
+
+          // attach hover tooltip
+          try{ attachHoverTooltip(m, cd_linha, sentidoApi); }catch(e){}
 
           m.on('click', function(evt){
             bindAndOpenMarker(m, id, prefixo, cd_linha, empresa);
@@ -560,6 +647,9 @@ async function atualizarMapa(){
           smallMarkers[cellKey]._prefixo = rep.prefixo;
           smallMarkers[cellKey]._sentido = rep.sentido;
 
+          // atualizar tooltip de hover
+          try{ attachHoverTooltip(smallMarkers[cellKey], rep.cd_linha, rep.sentido); }catch(e){}
+
           const el = smallMarkers[cellKey].getElement();
           if(el && el.innerHTML !== html){
             const icon = L.divIcon({ className:'', html, iconSize:[0,0], iconAnchor:[0,0], popupAnchor:[0,-8] });
@@ -583,6 +673,9 @@ async function atualizarMapa(){
           m._empresa = rep.empresa;
           m._prefixo = rep.prefixo;
           m._sentido = rep.sentido;
+
+          // attach hover tooltip
+          try{ attachHoverTooltip(m, rep.cd_linha, rep.sentido); }catch(e){}
 
           m.on('click', ()=> {
             bindAndOpenMarker(m, rep.id, rep.prefixo, rep.cd_linha, rep.empresa);
